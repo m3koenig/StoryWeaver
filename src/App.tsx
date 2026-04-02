@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, Component, ErrorInfo, ReactNode } from 'react';
 import { 
   signInWithPopup, 
   GoogleAuthProvider, 
@@ -20,7 +20,8 @@ import {
   where, 
   getDoc,
   serverTimestamp,
-  writeBatch
+  writeBatch,
+  getDocFromServer
 } from 'firebase/firestore';
 import { auth, db } from './firebase';
 import { cn } from './lib/utils';
@@ -35,8 +36,103 @@ import {
   BookOpen, 
   ShieldAlert,
   ArrowRight,
-  CheckCircle2
+  CheckCircle2,
+  AlertTriangle
 } from 'lucide-react';
+
+// --- Error Handling ---
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId: string | undefined;
+    email: string | null | undefined;
+    emailVerified: boolean | undefined;
+    isAnonymous: boolean | undefined;
+    tenantId: string | null | undefined;
+    providerInfo: {
+      providerId: string;
+      displayName: string | null;
+      email: string | null;
+      photoUrl: string | null;
+    }[];
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean, error: Error | null }> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error("Uncaught error:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      let errorMessage = "Something went wrong.";
+      try {
+        const parsed = JSON.parse(this.state.error?.message || "");
+        if (parsed.error) errorMessage = parsed.error;
+      } catch {
+        errorMessage = this.state.error?.message || errorMessage;
+      }
+
+      return (
+        <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+          <Card className="max-w-md w-full text-center space-y-4 border-rose-200 bg-rose-50/50">
+            <AlertTriangle className="w-12 h-12 text-rose-500 mx-auto" />
+            <h2 className="text-2xl font-bold text-slate-900">Oops! An error occurred</h2>
+            <p className="text-slate-600">{errorMessage}</p>
+            <Button onClick={() => window.location.reload()} variant="danger" className="w-full">
+              Reload Application
+            </Button>
+          </Card>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
 
 // --- Types ---
 type GameStatus = 'lobby' | 'obstacle' | 'fact1' | 'fact2' | 'reveal';
@@ -114,6 +210,14 @@ const Card = ({ children, className }: { children: React.ReactNode; className?: 
 );
 
 export default function App() {
+  return (
+    <ErrorBoundary>
+      <GameApp />
+    </ErrorBoundary>
+  );
+}
+
+function GameApp() {
   const [user, setUser] = useState<User | null>(null);
   const [game, setGame] = useState<Game | null>(null);
   const [stories, setStories] = useState<Story[]>([]);
@@ -121,6 +225,20 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [inputValue, setInputValue] = useState('');
   const [gameCode, setGameCode] = useState('');
+
+  // --- Connection Test ---
+  useEffect(() => {
+    async function testConnection() {
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+      } catch (error) {
+        if(error instanceof Error && error.message.includes('the client is offline')) {
+          console.error("Please check your Firebase configuration. ");
+        }
+      }
+    }
+    testConnection();
+  }, []);
 
   // --- Auth ---
   useEffect(() => {
@@ -147,8 +265,9 @@ export default function App() {
   const createGame = async () => {
     if (!user) return;
     setLoading(true);
+    const gameId = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const path = `games/${gameId}`;
     try {
-      const gameId = Math.random().toString(36).substring(2, 8).toUpperCase();
       const gameRef = doc(db, 'games', gameId);
       const newGame: Partial<Game> = {
         status: 'lobby',
@@ -162,8 +281,7 @@ export default function App() {
       await setDoc(gameRef, newGame);
       subscribeToGame(gameId);
     } catch (err) {
-      console.error(err);
-      setError('Failed to create game');
+      handleFirestoreError(err, OperationType.WRITE, path);
     } finally {
       setLoading(false);
     }
@@ -172,8 +290,10 @@ export default function App() {
   const joinGame = async (code: string) => {
     if (!user || !code) return;
     setLoading(true);
+    const gameId = code.toUpperCase();
+    const path = `games/${gameId}`;
     try {
-      const gameRef = doc(db, 'games', code.toUpperCase());
+      const gameRef = doc(db, 'games', gameId);
       const gameSnap = await getDoc(gameRef);
       
       if (!gameSnap.exists()) {
@@ -196,10 +316,9 @@ export default function App() {
         players: updatedPlayers,
         playerOrder: [...gameData.playerOrder, user.uid]
       });
-      subscribeToGame(code.toUpperCase());
+      subscribeToGame(gameId);
     } catch (err) {
-      console.error(err);
-      setError('Failed to join game');
+      handleFirestoreError(err, OperationType.WRITE, path);
     } finally {
       setLoading(false);
     }
@@ -213,12 +332,12 @@ export default function App() {
       } else {
         setGame(null);
       }
-    });
+    }, (err) => handleFirestoreError(err, OperationType.GET, `games/${gameId}`));
 
     const storiesQuery = query(collection(db, 'stories'), where('gameId', '==', gameId));
     const unsubStories = onSnapshot(storiesQuery, (snap) => {
       setStories(snap.docs.map(d => ({ id: d.id, ...d.data() } as Story)));
-    });
+    }, (err) => handleFirestoreError(err, OperationType.GET, 'stories'));
 
     return () => {
       unsubGame();
@@ -228,8 +347,13 @@ export default function App() {
 
   const startGame = async () => {
     if (!game || !user) return;
-    const gameRef = doc(db, 'games', game.id);
-    await updateDoc(gameRef, { status: 'obstacle', submissions: {} });
+    const path = `games/${game.id}`;
+    try {
+      const gameRef = doc(db, 'games', game.id);
+      await updateDoc(gameRef, { status: 'obstacle', submissions: {} });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, path);
+    }
   };
 
   const submitObstacle = async () => {
@@ -249,8 +373,7 @@ export default function App() {
       });
       setInputValue('');
     } catch (err) {
-      console.error(err);
-      setError('Failed to submit obstacle');
+      handleFirestoreError(err, OperationType.WRITE, 'stories/games');
     }
   };
 
@@ -278,8 +401,7 @@ export default function App() {
       });
       setInputValue('');
     } catch (err) {
-      console.error(err);
-      setError('Failed to submit fact');
+      handleFirestoreError(err, OperationType.UPDATE, 'stories/games');
     }
   };
 
@@ -293,37 +415,45 @@ export default function App() {
     else if (currentStatus === 'fact1') nextStatus = 'fact2';
     else if (currentStatus === 'fact2') nextStatus = 'reveal';
 
-    const batch = writeBatch(db);
-    
-    // Shuffle assignments
-    const n = game.playerOrder.length;
-    const shift = nextStatus === 'fact1' ? 1 : 2;
+    try {
+      const batch = writeBatch(db);
+      
+      // Shuffle assignments
+      const n = game.playerOrder.length;
+      const shift = nextStatus === 'fact1' ? 1 : 2;
 
-    stories.forEach(story => {
-      const creatorIndex = game.playerOrder.indexOf(story.creatorId);
-      const assignedIndex = (creatorIndex + shift) % n;
-      const assignedTo = game.playerOrder[assignedIndex];
-      batch.update(doc(db, 'stories', story.id), { assignedTo });
-    });
+      stories.forEach(story => {
+        const creatorIndex = game.playerOrder.indexOf(story.creatorId);
+        const assignedIndex = (creatorIndex + shift) % n;
+        const assignedTo = game.playerOrder[assignedIndex];
+        batch.update(doc(db, 'stories', story.id), { assignedTo });
+      });
 
-    batch.update(gameRef, { 
-      status: nextStatus,
-      submissions: {} 
-    });
+      batch.update(gameRef, { 
+        status: nextStatus,
+        submissions: {} 
+      });
 
-    await batch.commit();
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'batch/nextPhase');
+    }
   };
 
   const resetGame = async () => {
     if (!game) return;
-    const batch = writeBatch(db);
-    stories.forEach(s => batch.delete(doc(db, 'stories', s.id)));
-    batch.update(doc(db, 'games', game.id), { 
-      status: 'lobby', 
-      submissions: {},
-      playerOrder: Object.keys(game.players)
-    });
-    await batch.commit();
+    try {
+      const batch = writeBatch(db);
+      stories.forEach(s => batch.delete(doc(db, 'stories', s.id)));
+      batch.update(doc(db, 'games', game.id), { 
+        status: 'lobby', 
+        submissions: {},
+        playerOrder: Object.keys(game.players)
+      });
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'batch/reset');
+    }
   };
 
   // --- Render Helpers ---
