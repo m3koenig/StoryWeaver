@@ -252,10 +252,22 @@ function GameApp() {
   const login = async () => {
     try {
       const provider = new GoogleAuthProvider();
+      // Add custom parameters to force account selection
+      provider.setCustomParameters({ prompt: 'select_account' });
       await signInWithPopup(auth, provider);
-    } catch (err) {
-      console.error(err);
-      setError('Failed to login with Google');
+    } catch (err: any) {
+      console.error("Login Error:", err);
+      let msg = 'Failed to login with Google';
+      if (err.code === 'auth/unauthorized-domain') {
+        msg = `Unauthorized Domain: The domain ${window.location.hostname} needs to be added to the Firebase Console's Authorized Domains.`;
+      } else if (err.code === 'auth/popup-blocked') {
+        msg = 'Popup Blocked: Please enable popups for this site or open the app in a new tab.';
+      } else if (err.code === 'auth/cancelled-popup-request') {
+        msg = 'Login cancelled. Please try again.';
+      } else {
+        msg = `${msg}: ${err.message || 'Unknown error'}`;
+      }
+      setError(msg);
     }
   };
 
@@ -531,11 +543,22 @@ function GameApp() {
             <motion.div 
               initial={{ opacity: 0 }} 
               animate={{ opacity: 1 }}
-              className="bg-rose-50 border border-rose-200 text-rose-600 p-4 rounded-xl flex items-center gap-3"
+              className="bg-rose-50 border border-rose-200 text-rose-600 p-4 rounded-xl space-y-3"
             >
-              <ShieldAlert className="w-5 h-5" />
-              <p className="text-sm font-medium">{error}</p>
-              <button onClick={() => setError(null)} className="ml-auto text-rose-400 hover:text-rose-600">×</button>
+              <div className="flex items-center gap-3">
+                <ShieldAlert className="w-5 h-5 flex-shrink-0" />
+                <p className="text-sm font-medium">{error}</p>
+                <button onClick={() => setError(null)} className="ml-auto text-rose-400 hover:text-rose-600">×</button>
+              </div>
+              {error.includes('Popup Blocked') && (
+                <Button 
+                  onClick={() => window.open(window.location.href, '_blank')} 
+                  variant="outline" 
+                  className="w-full py-2 text-sm"
+                >
+                  Open in New Tab
+                </Button>
+              )}
             </motion.div>
           )}
         </div>
