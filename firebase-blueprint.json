@@ -1,0 +1,57 @@
+{
+  "entities": {
+    "Game": {
+      "title": "Game",
+      "description": "Represents a collaborative storytelling game session.",
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["lobby", "obstacle", "fact1", "fact2", "reveal"],
+          "description": "The current phase of the game."
+        },
+        "players": {
+          "type": "object",
+          "description": "A map of player UIDs to their names and host status."
+        },
+        "playerOrder": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "The order of players for shuffling stories."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the game was created."
+        }
+      },
+      "required": ["status", "players", "createdAt"]
+    },
+    "Story": {
+      "title": "Story",
+      "description": "A collaborative story built by multiple players.",
+      "type": "object",
+      "properties": {
+        "gameId": { "type": "string" },
+        "creatorId": { "type": "string" },
+        "obstacle": { "type": "string" },
+        "fact1": { "type": "string" },
+        "fact1AuthorId": { "type": "string" },
+        "fact2": { "type": "string" },
+        "fact2AuthorId": { "type": "string" },
+        "assignedTo": { "type": "string" }
+      },
+      "required": ["gameId", "creatorId"]
+    }
+  },
+  "firestore": {
+    "/games/{gameId}": {
+      "schema": "Game",
+      "description": "Game sessions."
+    },
+    "/stories/{storyId}": {
+      "schema": "Story",
+      "description": "Stories created within games."
+    }
+  }
+}

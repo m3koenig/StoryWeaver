@@ -1,0 +1,81 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: games
+    // Fields:
+    //   - status: string (lobby, obstacle, fact1, fact2, reveal)
+    //   - players: map (uid -> { name: string, isHost: bool })
+    //   - playerOrder: list of strings (uids)
+    //   - createdAt: timestamp
+    //
+    // Collection: stories
+    // Fields:
+    //   - gameId: string
+    //   - creatorId: string
+    //   - obstacle: string
+    //   - fact1: string
+    //   - fact1AuthorId: string
+    //   - fact2: string
+    //   - fact2AuthorId: string
+    //   - assignedTo: string
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isPlayerInGame(gameId) {
+      return isAuthenticated() && request.auth.uid in get(/databases/$(database)/documents/games/$(gameId)).data.players;
+    }
+
+    function isHost(gameData) {
+      return isAuthenticated() && gameData.players[request.auth.uid].isHost == true;
+    }
+
+    function isValidGame(data) {
+      return data.status in ['lobby', 'obstacle', 'fact1', 'fact2', 'reveal'] &&
+             data.players is map &&
+             data.players.size() <= 20 &&
+             (!('playerOrder' in data) || data.playerOrder is list);
+    }
+
+    function isValidStory(data) {
+      return data.gameId is string &&
+             data.creatorId is string &&
+             (!('obstacle' in data) || (data.obstacle is string && data.obstacle.size() < 1000)) &&
+             (!('fact1' in data) || (data.fact1 is string && data.fact1.size() < 1000)) &&
+             (!('fact2' in data) || (data.fact2 is string && data.fact2.size() < 1000)) &&
+             (!('assignedTo' in data) || data.assignedTo is string);
+    }
+
+    match /games/{gameId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidGame(request.resource.data);
+      allow update: if isAuthenticated() && isValidGame(request.resource.data) && (
+        // Any authenticated user can join a lobby
+        (resource.data.status == 'lobby' && request.resource.data.status == 'lobby') ||
+        // Host can change status or update players
+        isHost(resource.data)
+      );
+    }
+
+    match /stories/{storyId} {
+      allow read: if isAuthenticated() && isPlayerInGame(resource.data.gameId);
+      allow create: if isAuthenticated() && isValidStory(request.resource.data);
+      allow update: if isAuthenticated() && isValidStory(request.resource.data) && (
+        // Creator can set obstacle during obstacle phase
+        (request.auth.uid == resource.data.creatorId && !('fact1' in resource.data)) ||
+        // Assigned player can update
+        (request.auth.uid == resource.data.assignedTo) ||
+        // Host can shuffle/assign
+        isHost(get(/databases/$(database)/documents/games/$(resource.data.gameId)).data)
+      );
+    }
+  }
+}
